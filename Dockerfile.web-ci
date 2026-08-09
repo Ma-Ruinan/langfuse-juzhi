@@ -1,0 +1,151 @@
+# ============================================================
+# CI 构建用 Dockerfile (langfuse-web) —— 灵幾流水线使用
+# 基础镜像: artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web
+#   已预置: node:24-alpine + apk安全更新 + turbo 2.10.5 + pnpm 11.10.0
+#           + migrate v4.19.1(已编译在 /usr/bin/migrate) + prisma CLI 6.19.3
+#           + dumb-init + tzdata
+# 相对你原版 web/Dockerfile 的改动:
+#   1. 源头 FROM node:24-alpine 换成上面的内网基础镜像
+#   2. 删掉原版独立的 golang:1.26 migrate-builder 阶段
+#      —— migrate 已在基础镜像里编译好，runner 直接从基础镜像的 /usr/bin/migrate 拿
+#   3. pnpm install 与 runner 里的 prisma 安装，加内网 npm 源
+#   其余多阶段结构、runner 的所有 COPY、entrypoint 等，全部保留你原版不变
+# ============================================================
+
+ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc:80/artifactory/api/npm-taobao
+
+# === 源头：用你的基础镜像替换原版的 node:24-alpine ===
+FROM --platform=${TARGETPLATFORM:-linux/amd64} artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web AS alpine
+RUN echo "=== BASE IMAGE ===" && cat /base-image-info && echo "=================="
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} alpine AS build-base
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+
+# runtime-base：保留你原版清理逻辑（web 版保留 npm，因 runner 要用它装 prisma）
+FROM --platform=${TARGETPLATFORM:-linux/amd64} alpine AS runtime-base
+RUN rm -rf /usr/local/lib/node_modules/corepack \
+            /root/.cache/node/corepack && \
+    rm -f /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
+# 注意：原版这里有一个独立的 golang:1.26 migrate-builder 阶段，已删除。
+# migrate 已在基础镜像中编译好，位于 /usr/bin/migrate，runner 阶段直接从基础镜像取。
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} build-base AS pruner
+WORKDIR /app
+COPY . .
+RUN turbo prune --scope=web --docker
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} build-base AS builder
+WORKDIR /app
+COPY --from=pruner /app/out/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=pruner /app/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=pruner /app/out/json/ .
+
+ARG NPM_REGISTRY
+RUN pnpm install --registry ${NPM_REGISTRY} --frozen-lockfile
+
+ENV pnpm_config_verify_deps_before_run=false
+ENV DOCKER_BUILD 1
+ENV NEXT_MANUAL_SIG_HANDLE true
+
+ARG NEXT_IGNORE_BUILD_ERRORS
+ENV NEXT_IGNORE_BUILD_ERRORS=$NEXT_IGNORE_BUILD_ERRORS
+
+ARG NEXT_PUBLIC_PLAIN_APP_ID
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ENV NEXT_PUBLIC_LANGFUSE_CLOUD_REGION=$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ARG NEXT_PUBLIC_DEMO_ORG_ID
+ENV NEXT_PUBLIC_DEMO_ORG_ID=$NEXT_PUBLIC_DEMO_ORG_ID
+ARG NEXT_PUBLIC_DEMO_PROJECT_ID
+ENV NEXT_PUBLIC_DEMO_PROJECT_ID=$NEXT_PUBLIC_DEMO_PROJECT_ID
+ARG NEXT_PUBLIC_SIGN_UP_DISABLED
+ENV NEXT_PUBLIC_SIGN_UP_DISABLED=$NEXT_PUBLIC_SIGN_UP_DISABLED
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ENV NEXT_PUBLIC_POSTHOG_KEY=$NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_POSTHOG_HOST
+ENV NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST
+ARG NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE
+ENV NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE=$NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE
+ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT
+ENV NEXT_PUBLIC_SENTRY_ENVIRONMENT=$NEXT_PUBLIC_SENTRY_ENVIRONMENT
+ARG NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
+ARG NEXT_PUBLIC_BASE_PATH
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
+
+ARG SENTRY_AUTH_TOKEN
+ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
+ARG SENTRY_ORG
+ENV SENTRY_ORG=$SENTRY_ORG
+ARG SENTRY_PROJECT
+ENV SENTRY_PROJECT=$SENTRY_PROJECT
+
+ARG NEXT_PUBLIC_BUILD_ID
+ENV NEXT_PUBLIC_BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+ENV SENTRY_RELEASE=$NEXT_PUBLIC_BUILD_ID
+
+COPY --from=pruner /app/out/full/ .
+RUN rm -f ./web/src/middleware.ts
+
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_MANUAL_SIG_HANDLE true
+ENV CI true
+
+RUN NODE_OPTIONS='--max-old-space-size-percentage=75' turbo run build --filter=web...
+
+# runner：你原版逻辑，唯一改动是 prisma 安装加内网源、migrate 从基础镜像取
+FROM --platform=${TARGETPLATFORM:-linux/amd64} runtime-base AS runner
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+WORKDIR /app
+ARG NEXT_PUBLIC_BUILD_ID
+ENV BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ENV NEXT_PUBLIC_LANGFUSE_CLOUD_REGION=$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV DOCKER_BUILD 0
+ENV NEXT_MANUAL_SIG_HANDLE true
+
+RUN apk add --no-cache dumb-init tzdata
+
+ARG UID=1001
+ARG GID=1001
+RUN addgroup --system --gid ${GID} nodejs
+RUN adduser --system --uid ${UID} nextjs
+
+ARG NPM_REGISTRY
+RUN npm install --registry ${NPM_REGISTRY} -g --no-package-lock --no-save prisma@6.19.3
+
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+RUN if [ -n "$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION" ]; then \
+    npm install --registry ${NPM_REGISTRY} --no-package-lock --no-save dd-trace@5.109.0; \
+    fi
+
+RUN rm -rf /usr/local/lib/node_modules/npm && \
+    rm -f /usr/local/bin/npm /usr/local/bin/npx
+
+# migrate 从基础镜像取（原版是 COPY --from=migrate-builder，现基础镜像已含 /usr/bin/migrate）
+# runtime-base 继承自基础镜像，/usr/bin/migrate 本就在，无需再 COPY。
+
+COPY --from=builder --chown=nextjs:nodejs /app/web/next.config.mjs .
+COPY --from=builder --chown=nextjs:nodejs /app/web/package.json .
+COPY --from=builder --chown=nextjs:nodejs /app/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/web/.next/static ./web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/web/public ./web/public
+COPY --from=builder --chown=nextjs:nodejs /app/packages/shared/prisma ./packages/shared/prisma
+COPY --from=builder --chown=nextjs:nodejs /app/packages/shared/clickhouse ./packages/shared/clickhouse
+
+COPY --chown=nextjs:nodejs ./web/entrypoint.sh ./web/entrypoint.sh
+COPY --chown=nextjs:nodejs ./packages/shared/scripts/cleanup.sql ./packages/shared/scripts/cleanup.sql
+RUN chmod +x ./web/entrypoint.sh
+
+USER nextjs
+ENV PORT 3000
+ENTRYPOINT ["dumb-init", "--", "./web/entrypoint.sh"]
+CMD if [ -n "$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION" ]; then \
+    node --import dd-trace/initialize.mjs ./web/server.js --keepAliveTimeout 110000; \
+    else \
+    node ./web/server.js --keepAliveTimeout 110000; \
+    fi

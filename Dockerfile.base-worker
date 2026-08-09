@@ -1,0 +1,33 @@
+# ============================================================
+# langfuse-worker 基础镜像（第一阶段：本地构建，需能上外网）
+# 版本以你自己代码为准：node24 / turbo 2.10.5 / pnpm 11.10.0
+#
+# 目标镜像地址（推到你已建好的 base-image-repo）:
+#   artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker
+#
+# 本地构建 + 推送命令（在本文件所在目录执行）:
+#   docker build --platform linux/amd64 \
+#     -t artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker \
+#     -f Dockerfile.base-worker .
+#   docker push artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker
+# （推送前需先 docker login，见随附的操作说明）
+# ============================================================
+
+FROM node:24-alpine
+
+# [对应原 worker/Dockerfile 的 alpine 阶段] 系统安全更新
+RUN apk update && apk upgrade --no-cache libcrypto3 libssl3 libc6-compat busybox ssl_client zlib
+
+# [对应原 worker/Dockerfile 的 build-base 阶段] turbo + pnpm
+RUN npm install turbo@2.10.5 --global
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
+RUN corepack prepare pnpm@11.10.0 --activate
+
+# [对应原 worker/Dockerfile 的 runner 阶段用到的 dumb-init]
+RUN apk add --no-cache dumb-init
+
+# 基础镜像标记，便于日后在 CI 日志里确认用的是哪个基础镜像
+RUN printf 'BASE=langfuse-worker\nNODE=24-alpine\nPNPM=11.10.0\nTURBO=2.10.5\nBUILD_TIMESTAMP=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /base-image-info
