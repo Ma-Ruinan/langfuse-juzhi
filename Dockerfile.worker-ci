@@ -9,7 +9,7 @@
 # ============================================================
 
 # 内网 npm 源（文档 4.1.7 淘宝代理，含 :80）
-ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc/artifactory/api/npm/npm-taobao/
+ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc:80/artifactory/api/npm/npm-taobao/
 
 # === 源头：用你的基础镜像替换原版的 node:24-alpine ===
 # 原版是 FROM node:24-alpine AS alpine + apk upgrade；这些已在基础镜像里，直接用基础镜像当 alpine。
