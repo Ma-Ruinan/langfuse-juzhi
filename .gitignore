@@ -2,6 +2,10 @@
 
 sfdc-backfill
 
+# 中间产物
+migrate.tar.gz
+/clickhouse
+
 # dependencies
 /node_modules
 /.pnp
