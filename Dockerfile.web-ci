@@ -12,7 +12,7 @@
 #   其余多阶段结构、runner 的所有 COPY、entrypoint 等，全部保留你原版不变
 # ============================================================
 
-ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc:80/artifactory/api/npm-taobao
+ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc/artifactory/api/npm/npm-taobao/
 
 # === 源头：用你的基础镜像替换原版的 node:24-alpine ===
 FROM --platform=${TARGETPLATFORM:-linux/amd64} artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web AS alpine
