@@ -56,7 +56,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@langfuse/shared": "workspace:*",
     "@lezer/highlight": "^1.2.3",
-    "@mastra/client-js": "1.21.1",
+    "@mastra/client-js": "1.33.1",
     "@mastra/core": "1.46.0",
     "@mastra/mcp": "1.8.1",
     "@modelcontextprotocol/sdk": "1.29.0",
