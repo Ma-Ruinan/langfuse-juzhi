@@ -118,6 +118,7 @@ const nextConfig = {
   },
   experimental: {
     turbopackFileSystemCacheForBuild: true,
+    cpus: 8,
   },
 
   /**
