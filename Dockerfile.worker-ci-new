@@ -64,7 +64,10 @@ RUN turbo run build --filter=worker...
 
 # 保留当前新版 Langfuse worker 的 prod-deps / Prisma Client 拷贝逻辑。
 FROM --platform=${TARGETPLATFORM:-linux/amd64} builder AS prod-deps
-RUN pnpm --filter worker deploy --legacy --prod /prod/worker && \
+ARG NPM_REGISTRY
+
+RUN pnpm config set registry ${NPM_REGISTRY} && \
+    pnpm --filter worker deploy --legacy --prod /prod/worker && \
     builder_prisma_client_dir="$(find /app/node_modules/.pnpm -path '*/node_modules/@prisma/client' -type d | head -n 1)" && \
     deployed_prisma_client_dir="$(find /prod/worker/node_modules/.pnpm -path '*/node_modules/@prisma/client' -type d | head -n 1)" && \
     builder_prisma_runtime_dir="$(dirname "$(dirname "$builder_prisma_client_dir")")/.prisma" && \
