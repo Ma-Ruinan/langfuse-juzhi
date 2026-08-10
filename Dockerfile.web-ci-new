@@ -101,7 +101,8 @@ ENV CI=true
 
 # 这里会触发 @langfuse/shared -> prisma generate。
 # PRISMA_* 已由基础镜像继承，因此应直接使用本地 Engine。
-RUN NODE_OPTIONS='--max-old-space-size-percentage=75' turbo run build --filter=web...
+# RUN NODE_OPTIONS='--max-old-space-size-percentage=75' turbo run build --filter=web...
+RUN NODE_OPTIONS='--max-old-space-size=8192' turbo run build --filter=web...
 
 FROM --platform=${TARGETPLATFORM:-linux/amd64} runtime-base AS runner
 ARG TARGETPLATFORM
