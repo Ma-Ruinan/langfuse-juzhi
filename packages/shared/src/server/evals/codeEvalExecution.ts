@@ -133,6 +133,12 @@ function buildCodeEvalPayload(params: {
       output: byName.get("output") ?? null,
       metadata: byName.get("metadata") ?? null,
       toolCalls,
+      // JUZHI-ADAPTER HOOK: 时间由 observationEvalProcessor 在 CODE 路径注入；
+      // LLM 路径或不可用时为 null。
+      timing: {
+        startTime: byName.get("__ttftStartTime") ?? null,
+        completionStartTime: byName.get("__ttftCompletionStartTime") ?? null,
+      },
     },
   };
 

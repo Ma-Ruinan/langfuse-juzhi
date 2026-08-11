@@ -35,6 +35,11 @@ export type CodeEvalPayload = {
     output: unknown;
     metadata: unknown;
     toolCalls: ToolCallForEval[];
+    // JUZHI-ADAPTER HOOK: 为 TTFT 这类 code evaluator 暴露时间字段
+    timing?: {
+      startTime: unknown;
+      completionStartTime: unknown;
+    };
   };
   experiment?: {
     itemExpectedOutput: unknown;

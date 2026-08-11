@@ -71,6 +71,12 @@ export const observationForEvalSchema = z.object({
   input: z.unknown().nullish(),
   output: z.unknown().nullish(),
   metadata: z.record(z.string(), z.unknown()).nullish(),
+  // JUZHI-ADAPTER HOOK: 放行时间字段，供 code evaluator 计算 TTFT。
+  // 用 z.any() 不做类型校验，避免 ClickHouse 时间格式与严格类型不符导致
+  // observationForEvalSchema.parse 抛错、进而使评估调度整体失败。
+  // 真正的时间解析在 code evaluator 的 toMs() 里完成。
+  start_time: z.any().nullish(),
+  completion_start_time: z.any().nullish(),
 });
 
 export type ObservationForEval = z.infer<typeof observationForEvalSchema>;

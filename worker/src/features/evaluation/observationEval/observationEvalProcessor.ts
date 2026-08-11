@@ -248,6 +248,18 @@ export async function processObservationEval(
     `Extracted ${extractedVariables.length} variables for job ${job.id}`,
   );
 
+  // JUZHI-ADAPTER HOOK: 仅 CODE 路径注入 observation 时间（供 TTFT 计算），
+  // 用保留变量名承载，由 buildCodeEvalPayload 读取；LLM 裁判路径不受影响。
+  if (params.executionType === EvalTemplateType.CODE) {
+    extractedVariables.push(
+      { var: "__ttftStartTime", value: observationData.start_time ?? null },
+      {
+        var: "__ttftCompletionStartTime",
+        value: observationData.completion_start_time ?? null,
+      },
+    );
+  }
+
   const executionParams = {
     projectId: event.projectId,
     organizationId: evalJobConfig.project.orgId,
