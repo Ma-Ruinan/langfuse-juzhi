@@ -1,4 +1,6 @@
 import type { LanguageModel } from "ai";
+// JUZHI-ADAPTER HOOK: 聚智网关 HMAC 鉴权
+import { isJuzhiBaseURL, withJuzhiSigning } from "../../juzhiAuth";
 
 import type { LLMConnectionConfig } from "../../../../interfaces/customLLMProviderConfigSchemas";
 import { LLMAdapter } from "../../types";
@@ -53,15 +55,33 @@ export async function buildAiSdkModel(params: {
   } = params;
 
   switch (model.adapter) {
-    case LLMAdapter.OpenAI:
+    // 原版langfuse中的模型网关实现方式
+    // case LLMAdapter.OpenAI:
+    //   return buildOpenAIModel({
+    //     modelId: model.id,
+    //     apiKey,
+    //     baseURL,
+    //     extraHeaders,
+    //     apiMode: modelConfig.openAIApiMode ?? "chat-completions",
+    //     fetch: createFetch("OpenAI LLM base URL"),
+    //   });
+  
+    // 为适应聚智平台模型网关的修改
+    case LLMAdapter.OpenAI: {
+      // JUZHI-ADAPTER HOOK: 聚智网关按 baseURL 判断，包一层 HMAC 签名 fetch；
+      // 非聚智连接走原始 createFetch，行为完全不变。
+      const openAIFetch = isJuzhiBaseURL(baseURL)
+        ? withJuzhiSigning(createFetch("OpenAI LLM base URL"), apiKey)
+        : createFetch("OpenAI LLM base URL");
       return buildOpenAIModel({
         modelId: model.id,
         apiKey,
         baseURL,
         extraHeaders,
         apiMode: modelConfig.openAIApiMode ?? "chat-completions",
-        fetch: createFetch("OpenAI LLM base URL"),
+        fetch: openAIFetch,
       });
+    }
 
     case LLMAdapter.Azure:
       return buildAzureModel({
