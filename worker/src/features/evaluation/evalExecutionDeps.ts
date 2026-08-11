@@ -4,7 +4,7 @@ import { JobExecutionStatus } from "@prisma/client";
 import { prisma } from "@langfuse/shared/src/db";
 import {
   buildEventBucketPrefix,
-  createLLMOutput,
+  // createLLMOutput,  # 原来langfuse v4使用LLM judger输出处理方式（function calling）
   DefaultEvalModelService,
   generateLLMText,
   IngestionQueue,
@@ -15,6 +15,11 @@ import {
   UNKNOWN_INGESTION_SDK_VALUE,
 } from "@langfuse/shared/src/server";
 import { buildEvalMessages } from "./evalRuntime";
+// 为了改造LLM judger的输出解析方式实现的：输入评测提示词后缀添加和输出结果手动解析
+import {
+  appendJsonOutputInstruction,
+  parseStructuredLLMText,
+} from "./structuredOutputFallback";
 import { getEvalS3StorageClient } from "./s3StorageClient";
 import { createInternalEventsWriter } from "../internal-tracing/createInternalEventsWriter";
 import { recordExportVolume } from "../../services/exportVolumeMetric";
@@ -228,9 +233,53 @@ export function createProductionEvalExecutionDeps(): EvalExecutionDeps {
             )
           : 0);
 
+    // langfuse v4中的原始实现开始（与LLM judger的输出处理有关）
+    //   const llmParams = mapLegacyLLMCompletionParams({
+    //     connection,
+    //     messages: params.messages,
+    //     modelParams: {
+    //       provider: params.modelConfig.provider,
+    //       model: params.modelConfig.model,
+    //       adapter,
+    //       ...params.modelConfig.modelParams,
+    //     },
+    //   });
+    //   const result = await generateLLMText({
+    //     ...llmParams,
+    //     output: createLLMOutput(params.structuredOutputSchema),
+    //     maxRetries: 1,
+    //     trace: {
+    //       targetProjectId: params.traceSinkParams.targetProjectId,
+    //       traceId: params.traceSinkParams.traceId,
+    //       traceName: params.traceSinkParams.traceName,
+    //       environment: params.traceSinkParams.environment,
+    //       metadata: params.traceSinkParams.metadata,
+    //       eventsWriter: createInternalEventsWriter(),
+    //     },
+    //   });
+
+    //   // Record only after a successful send, like the other integrations.
+    //   recordExportVolume({
+    //     integration: "llmaj",
+    //     bytes,
+    //     projectId: params.traceSinkParams.targetProjectId,
+    //   });
+
+    //   return result.output;
+    // },
+    // langfuse v4中的原始实现结束（与LLM judger的输出处理有关）
+
+    // 为了适配聚智平台中LLM judger结果输出的修改。（修改开始）
+    // 手工结构化输出兜底：在提示词末尾追加 JSON 格式约束。
+      // 用于替代原生结构化输出（AI SDK 的 Output.object = function calling /
+      // json mode），以兼容不支持该能力的模型网关（如聚智网关、本地 Claude 代理）。
+      const messagesWithInstruction = appendJsonOutputInstruction(
+        params.messages,
+      );
+
       const llmParams = mapLegacyLLMCompletionParams({
         connection,
-        messages: params.messages,
+        messages: messagesWithInstruction,
         modelParams: {
           provider: params.modelConfig.provider,
           model: params.modelConfig.model,
@@ -238,9 +287,10 @@ export function createProductionEvalExecutionDeps(): EvalExecutionDeps {
           ...params.modelConfig.modelParams,
         },
       });
+
+      // 不传 output：改走纯文本补全，绕过原生结构化输出。
       const result = await generateLLMText({
         ...llmParams,
-        output: createLLMOutput(params.structuredOutputSchema),
         maxRetries: 1,
         trace: {
           targetProjectId: params.traceSinkParams.targetProjectId,
@@ -259,8 +309,14 @@ export function createProductionEvalExecutionDeps(): EvalExecutionDeps {
         projectId: params.traceSinkParams.targetProjectId,
       });
 
-      return result.output;
+      // 手工解析纯文本为 { reasoning, score }，并用同一个 schema 校验，
+      // 保证下游 validateEvalOutputResult 拿到的形状与原生路径完全一致。
+      return parseStructuredLLMText(
+        result.text,
+        params.structuredOutputSchema,
+      );
     },
+    // 为了适配聚智平台中LLM judger结果输出的修改（修改结束）。
 
     fetchModelConfig: async ({ projectId, provider, model, modelParams }) => {
       const result = await DefaultEvalModelService.fetchValidModelConfig(
