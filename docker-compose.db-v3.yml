@@ -1,0 +1,89 @@
+services:
+  postgres-v3:
+    image: docker.io/postgres:17
+    container_name: langfuse-v3-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - langfuse_v3_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clickhouse-v3:
+    image: docker.io/clickhouse/clickhouse-server:25.6.3.116
+    container_name: langfuse-v3-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB: default
+    ports:
+      - "127.0.0.1:8124:8123"
+      - "127.0.0.1:9001:9000"
+    volumes:
+      - langfuse_v3_clickhouse_data:/var/lib/clickhouse
+      - langfuse_v3_clickhouse_logs:/var/log/clickhouse-server
+
+  redis-v3:
+    image: docker.io/redis:7.2.4
+    container_name: langfuse-v3-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass myredissecret
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - langfuse_v3_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-v3:
+    image: docker.io/minio/minio
+    container_name: langfuse-v3-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command:
+      - -c
+      - >
+        mkdir -p /data/langfuse &&
+        minio server
+        --address ":9000"
+        --console-address ":9001"
+        /data
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "127.0.0.1:9190:9000"
+      - "127.0.0.1:9191:9001"
+    volumes:
+      - langfuse_v3_minio_data:/data
+
+volumes:
+  langfuse_v3_postgres_data:
+    driver: local
+
+  langfuse_v3_clickhouse_data:
+    driver: local
+
+  langfuse_v3_clickhouse_logs:
+    driver: local
+
+  langfuse_v3_redis_data:
+    driver: local
+
+  langfuse_v3_minio_data:
+    driver: local

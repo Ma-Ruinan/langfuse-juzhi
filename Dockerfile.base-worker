@@ -1,0 +1,74 @@
+# ============================================================
+# Langfuse Worker 基础镜像 —— Langfuse v3.84.0
+# Node 20 / Turbo ^2.5.4 / pnpm 9.5.0 / Prisma 6.10.1
+#
+# 流程与已跑通方案一致：Prisma Engine 在可联网环境提前放入基础镜像，
+# 灵畿最终构建阶段不再访问 binaries.prisma.sh。
+#
+# 构建前，仓库中必须准备：
+# docker/prisma-engines/9b628578b3b7cae625e8c927178f15a170e74a9c/
+#   linux-musl-openssl-3.0.x/
+#     schema-engine.gz            schema-engine.gz.sha256
+#     query-engine.gz             query-engine.gz.sha256
+#     libquery_engine.so.node.gz  libquery_engine.so.node.gz.sha256
+#
+# amd64 构建示例：
+# docker build --platform linux/amd64 \
+#   -t artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker \
+#   -f Dockerfile.base-worker .
+# 推送：
+# docker push artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker
+# ============================================================
+
+FROM node:20-alpine
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com/
+
+RUN apk update && \
+    apk upgrade --no-cache libcrypto3 libssl3 libc6-compat busybox ssl_client zlib && \
+    npm install --registry ${NPM_REGISTRY} turbo@^2.5.4 --global && \
+    PNPM_HOME=/pnpm PATH="/pnpm:${PATH}" corepack enable && \
+    PNPM_HOME=/pnpm PATH="/pnpm:${PATH}" corepack prepare pnpm@9.5.0 --activate && \
+    apk add --no-cache dumb-init
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+ARG TARGETARCH
+ARG PRISMA_VERSION=6.10.1
+ARG PRISMA_COMMIT=9b628578b3b7cae625e8c927178f15a170e74a9c
+
+COPY docker/prisma-engines/${PRISMA_COMMIT}/ /tmp/prisma-bins/${PRISMA_COMMIT}/
+
+RUN case "${TARGETARCH}" in \
+        amd64) PRISMA_PLATFORM="linux-musl-openssl-3.0.x" ;; \
+        arm64) PRISMA_PLATFORM="linux-musl-arm64-openssl-3.0.x" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
+    SRC="/tmp/prisma-bins/${PRISMA_COMMIT}/${PRISMA_PLATFORM}" && \
+    CACHE_DIR="/root/.cache/prisma/master/${PRISMA_COMMIT}/${PRISMA_PLATFORM}" && \
+    test -f "${SRC}/schema-engine.gz" && \
+    test -f "${SRC}/query-engine.gz" && \
+    test -f "${SRC}/libquery_engine.so.node.gz" && \
+    mkdir -p "${CACHE_DIR}" /usr/local/lib && \
+    gunzip -c "${SRC}/schema-engine.gz" > "${CACHE_DIR}/schema-engine" && \
+    gunzip -c "${SRC}/query-engine.gz" > "${CACHE_DIR}/query-engine" && \
+    gunzip -c "${SRC}/libquery_engine.so.node.gz" > "${CACHE_DIR}/libquery-engine" && \
+    cp "${SRC}/schema-engine.gz.sha256" "${CACHE_DIR}/schema-engine.gz.sha256" && \
+    cp "${SRC}/query-engine.gz.sha256" "${CACHE_DIR}/query-engine.gz.sha256" && \
+    cp "${SRC}/libquery_engine.so.node.gz.sha256" "${CACHE_DIR}/libquery-engine.gz.sha256" && \
+    for engine in schema-engine query-engine libquery-engine; do \
+        sha256sum "${CACHE_DIR}/${engine}" | awk '{print $1}' > "${CACHE_DIR}/${engine}.sha256"; \
+        chmod 755 "${CACHE_DIR}/${engine}"; \
+    done && \
+    cp "${CACHE_DIR}/schema-engine" /usr/local/bin/prisma-schema-engine && \
+    ln -sf "${CACHE_DIR}/query-engine" /usr/local/bin/prisma-query-engine && \
+    cp "${CACHE_DIR}/libquery-engine" /usr/local/lib/libquery_engine.so.node && \
+    rm -rf /tmp/prisma-bins && \
+    printf 'BASE=langfuse-worker\nNODE=20-alpine\nPNPM=9.5.0\nTURBO=^2.5.4\nPRISMA=%s\nTARGETARCH=%s\nPRISMA_COMMIT=%s\nBUILD_TIMESTAMP=%s\n' \
+      "${PRISMA_VERSION}" "${TARGETARCH}" "${PRISMA_COMMIT}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > /base-image-info
+
+ENV PRISMA_SCHEMA_ENGINE_BINARY=/usr/local/bin/prisma-schema-engine
+ENV PRISMA_QUERY_ENGINE_BINARY=/usr/local/bin/prisma-query-engine
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/usr/local/lib/libquery_engine.so.node

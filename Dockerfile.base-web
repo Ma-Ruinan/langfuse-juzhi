@@ -1,0 +1,95 @@
+# ============================================================
+# Langfuse Web 基础镜像 —— Langfuse v3.84.0
+# Node 20 / Turbo ^2.5.4 / pnpm 9.5.0 / golang-migrate v4.18.3 / Prisma 6.10.1
+#
+# 流程（与已跑通方案一致）：
+#   1. 在可联网环境构建基础镜像
+#   2. Prisma Engine 提前放入基础镜像
+#   3. 通过 PRISMA_* 环境变量强制 Prisma 使用本地 Engine
+#   4. 将基础镜像推送到单位内部镜像仓库
+#   5. 灵畿最终镜像构建不再访问 binaries.prisma.sh
+#
+# 构建前，仓库中必须准备：
+# docker/prisma-engines/9b628578b3b7cae625e8c927178f15a170e74a9c/
+#   linux-musl-openssl-3.0.x/
+#     schema-engine.gz            schema-engine.gz.sha256
+#     query-engine.gz             query-engine.gz.sha256
+#     libquery_engine.so.node.gz  libquery_engine.so.node.gz.sha256
+#
+# amd64 构建示例：
+# docker build --platform linux/amd64 \
+#   -t artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web \
+#   -f Dockerfile.base-web .
+# 推送：
+# docker push artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web
+# ============================================================
+
+FROM node:20-alpine
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com/
+ARG GOPROXY=https://goproxy.cn,direct
+ARG SENTRY_CLI_VERSION=2.39.1
+
+# 系统更新 + Turbo + pnpm + migrate + Web 运行时依赖 + sentry-cli + redis-cli
+RUN apk update && \
+    apk upgrade --no-cache libcrypto3 libssl3 libc6-compat busybox ssl_client zlib && \
+    npm install --registry ${NPM_REGISTRY} turbo@^2.5.4 --global && \
+    PNPM_HOME=/pnpm PATH="/pnpm:${PATH}" corepack enable && \
+    PNPM_HOME=/pnpm PATH="/pnpm:${PATH}" corepack prepare pnpm@9.5.0 --activate && \
+    apk add --no-cache --virtual .go-build-deps go git && \
+    GOPROXY=${GOPROXY} GOBIN=/usr/bin GOFLAGS=-trimpath CGO_ENABLED=0 \
+      go install -tags 'postgres,clickhouse' -ldflags='-s -w' \
+      github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.3 && \
+    chmod +x /usr/bin/migrate && \
+    apk del .go-build-deps && \
+    rm -rf /root/go /root/.cache/go-build && \
+    npm install --registry ${NPM_REGISTRY} -g @sentry/cli@${SENTRY_CLI_VERSION} && \
+    apk add --no-cache dumb-init tzdata curl busybox-extras && \
+    apk add --no-cache --virtual .redis-deps redis && \
+    cp /usr/bin/redis-cli /usr/local/bin/ && \
+    apk del .redis-deps
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="${PNPM_HOME}:${PATH}"
+
+# Prisma 6.10.1 对应的 Engine commit（与 @prisma/engines-version 一致）
+ARG TARGETARCH
+ARG PRISMA_VERSION=6.10.1
+ARG PRISMA_COMMIT=9b628578b3b7cae625e8c927178f15a170e74a9c
+
+# Engine 文件提前放在代码仓库中，再 COPY 进基础镜像
+COPY docker/prisma-engines/${PRISMA_COMMIT}/ /tmp/prisma-bins/${PRISMA_COMMIT}/
+
+RUN case "${TARGETARCH}" in \
+        amd64) PRISMA_PLATFORM="linux-musl-openssl-3.0.x" ;; \
+        arm64) PRISMA_PLATFORM="linux-musl-arm64-openssl-3.0.x" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
+    SRC="/tmp/prisma-bins/${PRISMA_COMMIT}/${PRISMA_PLATFORM}" && \
+    CACHE_DIR="/root/.cache/prisma/master/${PRISMA_COMMIT}/${PRISMA_PLATFORM}" && \
+    test -f "${SRC}/schema-engine.gz" && \
+    test -f "${SRC}/query-engine.gz" && \
+    test -f "${SRC}/libquery_engine.so.node.gz" && \
+    mkdir -p "${CACHE_DIR}" /usr/local/lib && \
+    gunzip -c "${SRC}/schema-engine.gz" > "${CACHE_DIR}/schema-engine" && \
+    gunzip -c "${SRC}/query-engine.gz" > "${CACHE_DIR}/query-engine" && \
+    gunzip -c "${SRC}/libquery_engine.so.node.gz" > "${CACHE_DIR}/libquery-engine" && \
+    cp "${SRC}/schema-engine.gz.sha256" "${CACHE_DIR}/schema-engine.gz.sha256" && \
+    cp "${SRC}/query-engine.gz.sha256" "${CACHE_DIR}/query-engine.gz.sha256" && \
+    cp "${SRC}/libquery_engine.so.node.gz.sha256" "${CACHE_DIR}/libquery-engine.gz.sha256" && \
+    for engine in schema-engine query-engine libquery-engine; do \
+        sha256sum "${CACHE_DIR}/${engine}" | awk '{print $1}' > "${CACHE_DIR}/${engine}.sha256"; \
+        chmod 755 "${CACHE_DIR}/${engine}"; \
+    done && \
+    cp "${CACHE_DIR}/schema-engine" /usr/local/bin/prisma-schema-engine && \
+    ln -sf "${CACHE_DIR}/query-engine" /usr/local/bin/prisma-query-engine && \
+    cp "${CACHE_DIR}/libquery-engine" /usr/local/lib/libquery_engine.so.node && \
+    rm -rf /tmp/prisma-bins && \
+    printf 'BASE=langfuse-web\nNODE=20-alpine\nPNPM=9.5.0\nTURBO=^2.5.4\nMIGRATE=v4.18.3\nPRISMA=%s\nTARGETARCH=%s\nPRISMA_COMMIT=%s\nBUILD_TIMESTAMP=%s\n' \
+      "${PRISMA_VERSION}" "${TARGETARCH}" "${PRISMA_COMMIT}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > /base-image-info
+
+# 核心：后续 pnpm install / prisma generate 直接使用基础镜像中的本地 Engine
+ENV PRISMA_SCHEMA_ENGINE_BINARY=/usr/local/bin/prisma-schema-engine
+ENV PRISMA_QUERY_ENGINE_BINARY=/usr/local/bin/prisma-query-engine
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/usr/local/lib/libquery_engine.so.node

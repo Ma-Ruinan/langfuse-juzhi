@@ -1,0 +1,155 @@
+# ============================================================
+# CI/CD 构建用 Dockerfile (langfuse-web)
+# 基础镜像: artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web-v3.84
+# 已预置:
+#   node:20-alpine, apk安全更新, turbo, pnpm
+#   golang-migrate v4.18.3, sentry-cli v2.39.1
+#   dumb-init, tzdata, curl, busybox-extras, redis-cli
+#   Prisma 引擎 (schema-engine + libquery_engine, amd64/arm64)
+# 需替换: NPM_REGISTRY 为公司内网 npm 源
+# ============================================================
+
+# --- 以下阶段已预置在基础镜像中 ---
+# FROM node:20-alpine AS alpine
+#   apk update && apk upgrade
+# FROM alpine AS base
+#   npm install turbo, corepack prepare pnpm
+#   golang-migrate (go install), sentry-cli (npm install -g)
+#   apk add dumb-init tzdata curl busybox-extras
+#   apk add redis (临时安装复制 redis-cli 后删除)
+#   Prisma 引擎下载 + ENV PRISMA_SCHEMA_ENGINE_BINARY / PRISMA_QUERY_ENGINE_LIBRARY
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:web-v3.84 AS base
+
+RUN echo "=== BASE IMAGE ===" && cat /base-image-info && echo "==================="
+
+# ============================================================
+# pruner
+# ============================================================
+FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS pruner
+
+WORKDIR /app
+COPY . .
+RUN turbo prune --scope=web --docker
+
+# ============================================================
+# builder
+# ============================================================
+FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS builder
+
+WORKDIR /app
+
+COPY --from=pruner /app/out/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=pruner /app/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=pruner /app/out/json/ .
+
+
+ENV PUPPETEER_SKIP_DOWNLOAD true
+ENV PUPPETEER_DOWNLOAD_HOST https://cdn.npmmirror.com/binaries
+# ***** 改为你公司的内网 npm 源 *****
+ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc/artifactory/api/npm/npm-taobao/
+RUN pnpm config set registry ${NPM_REGISTRY}
+
+RUN pnpm install --frozen-lockfile
+
+ENV DOCKER_BUILD 1
+ENV NEXT_MANUAL_SIG_HANDLE true
+
+ARG NEXT_PUBLIC_PLAIN_APP_ID
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ENV NEXT_PUBLIC_LANGFUSE_CLOUD_REGION=$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ARG NEXT_PUBLIC_DEMO_ORG_ID
+ENV NEXT_PUBLIC_DEMO_ORG_ID=$NEXT_PUBLIC_DEMO_ORG_ID
+ARG NEXT_PUBLIC_DEMO_PROJECT_ID
+ENV NEXT_PUBLIC_DEMO_PROJECT_ID=$NEXT_PUBLIC_DEMO_PROJECT_ID
+ARG NEXT_PUBLIC_SIGN_UP_DISABLED
+ENV NEXT_PUBLIC_SIGN_UP_DISABLED=$NEXT_PUBLIC_SIGN_UP_DISABLED
+ARG NEXT_PUBLIC_TURNSTILE_SITE_KEY
+ENV NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ENV NEXT_PUBLIC_POSTHOG_KEY=$NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_POSTHOG_HOST
+ENV NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST
+ARG NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE
+ENV NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE=$NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE
+ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT
+ENV NEXT_PUBLIC_SENTRY_ENVIRONMENT=$NEXT_PUBLIC_SENTRY_ENVIRONMENT
+ARG NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
+ARG NEXT_PUBLIC_BASE_PATH
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
+
+ARG SENTRY_AUTH_TOKEN
+ENV SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
+ARG SENTRY_ORG
+ENV SENTRY_ORG=$SENTRY_ORG
+ARG SENTRY_PROJECT
+ENV SENTRY_PROJECT=$SENTRY_PROJECT
+
+ARG NEXT_PUBLIC_BUILD_ID
+ENV NEXT_PUBLIC_BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+ENV SENTRY_RELEASE=$NEXT_PUBLIC_BUILD_ID
+
+COPY --from=pruner /app/out/full/ .
+
+RUN rm -f ./web/src/middleware.ts
+
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_MANUAL_SIG_HANDLE true
+ENV CI true
+
+RUN NODE_OPTIONS='--max-old-space-size=8192' turbo run build --filter=web...
+
+# ============================================================
+# runner
+# ============================================================
+FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS runner
+
+ARG TARGETPLATFORM BUILDPLATFORM
+WORKDIR /app
+
+ARG NEXT_PUBLIC_BUILD_ID
+ENV BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ENV NEXT_PUBLIC_LANGFUSE_CLOUD_REGION=$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV DOCKER_BUILD 0
+ENV NEXT_MANUAL_SIG_HANDLE true
+
+ARG UID=1001 GID=1001
+RUN addgroup --system --gid ${GID} nodejs
+RUN adduser --system --uid ${UID} nextjs
+
+# ***** 改为你公司的内网 npm 源 *****
+ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc/artifactory/api/npm/npm-taobao/
+RUN npm install --registry ${NPM_REGISTRY} -g --no-package-lock --no-save prisma@6.10.1
+
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+RUN if [ -n "$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION" ]; then \
+        npm install --registry ${NPM_REGISTRY} --no-package-lock --no-save dd-trace@5.36.0; \
+    fi
+
+COPY --from=builder --chown=nextjs:nodejs /app/web/next.config.mjs .
+COPY --from=builder --chown=nextjs:nodejs /app/web/package.json .
+COPY --from=builder --chown=nextjs:nodejs /app/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/web/.next/static ./web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/web/public ./web/public
+COPY --from=builder --chown=nextjs:nodejs /app/packages/shared/prisma ./packages/shared/prisma
+COPY --from=builder --chown=nextjs:nodejs /app/packages/shared/clickhouse ./packages/shared/clickhouse
+
+COPY --chown=nextjs:nodejs ./web/entrypoint.sh ./web/entrypoint.sh
+COPY --chown=nextjs:nodejs ./packages/shared/scripts/cleanup.sql ./packages/shared/scripts/cleanup.sql
+RUN chmod +x ./web/entrypoint.sh
+
+USER nextjs
+
+ENV PORT 3000
+
+ENTRYPOINT ["dumb-init", "--", "./web/entrypoint.sh"]
+CMD if [ -n "$NEXT_PUBLIC_LANGFUSE_CLOUD_REGION" ]; then \
+      node --import dd-trace/initialize.mjs ./web/server.js --keepAliveTimeout 110000; \
+    else \
+      node ./web/server.js --keepAliveTimeout 110000; \
+    fi

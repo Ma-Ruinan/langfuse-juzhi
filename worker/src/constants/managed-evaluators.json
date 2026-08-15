@@ -237,5 +237,17 @@
       "reasoning": "One sentence reasoning for the score"
     },
     "prompt": "Given a topic, classify if the AI refused to answer the question about the topic.\nTopic: {{topic}}"
-  }
+  },
+  {
+  "id": "c8ahyigbog60hx959m89g2loh",
+  "created_at": "2026-07-29T00:00:00.000Z",
+  "updated_at": "2026-07-29T00:00:00.000Z",
+  "name": "Ours Tool Parameter Correctness",
+  "version": 1,
+  "outputSchema": {
+    "score": "Score between 0 and 1. Score 1 if all tool-call arguments are correct (parameter names and types conform to the tool schema, all required parameters present, none undeclared) and every value is faithfully extracted from the user input; score 0 if any argument is wrong, missing, or fabricated",
+    "reasoning": "One or two sentences naming which arguments are correct or incorrect and why"
+  },
+  "prompt": "Evaluate whether the arguments the agent filled into its tool call are correct, on a scale from 0 to 1. Assume the choice of which tool to call is already correct - judge ONLY whether the arguments are filled correctly, never whether a different tool should have been used.\n\nYou are given, in the input, the available tool definitions (each tool's name and its parameter schema) together with the user's request; and, in the model output, the actual tool call the agent produced (the tool name and the arguments it filled in).\n\nA tool call is correct (Score: 1) when BOTH of the following hold:\n1. Schema conformance: every argument uses a parameter name declared in the called tool's schema, every value matches the declared type (and any enum or format constraint), all required parameters are present, and no undeclared parameter is added.\n2. Faithful extraction: every argument value is taken from, or correctly inferred from, the user's request, with nothing fabricated, guessed, or misread.\n\nA tool call is incorrect (Score: 0) if it violates either condition - for example a wrong or misspelled parameter name, a wrong value type, a missing required parameter, or a value that does not come from the user's input.\n\nExample:\nTool definition: query_leave_policy(employee_level: string [junior|mid|senior], years_of_service: integer); both required.\nUser request: I'd like to learn about the company's annual leave policy.\nTool call: query_leave_policy(employee_level=\"senior\", years_of_service=10)\nScore: 0.0\nReasoning: The user gave neither a job level nor years of service, yet both required arguments were filled with concrete values. Those values are fabricated rather than extracted from the request, so the call is incorrect.\n\nInput:\nTool definitions and user request: {{input}}\nModel output (contains the tool call the agent produced): {{output}}\n\nThink step by step."
+}
 ]

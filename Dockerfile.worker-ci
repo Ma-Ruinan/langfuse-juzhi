@@ -1,0 +1,86 @@
+# ============================================================
+# CI/CD 构建用 Dockerfile (langfuse-worker)
+# 基础镜像: artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker-v3.84
+# 已预置:
+#   node:20-alpine, apk安全更新, turbo, pnpm, dumb-init
+#   Prisma 引擎 (schema-engine + libquery_engine, amd64/arm64)
+# 需替换: NPM_REGISTRY 为公司内网 npm 源
+# ============================================================
+
+# --- 以下阶段已预置在基础镜像中 ---
+# FROM node:20-alpine AS alpine
+#   apk update && apk upgrade
+# FROM alpine AS base
+#   npm install turbo, corepack prepare pnpm
+#   apk add dumb-init
+#   Prisma 引擎下载 + ENV PRISMA_SCHEMA_ENGINE_BINARY / PRISMA_QUERY_ENGINE_LIBRARY
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} artifact.nc.rdcloud.4c.hq.cmcc:80/base-image-repo/langfuse-base:worker-v3.84 AS base
+
+RUN echo "=== BASE IMAGE ===" && cat /base-image-info && echo "==================="
+
+# ============================================================
+# pruner
+# ============================================================
+FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS pruner
+
+WORKDIR /app
+COPY . .
+RUN turbo prune --scope=worker --docker
+
+# ============================================================
+# builder
+# ============================================================
+FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS builder
+
+WORKDIR /app
+
+COPY --from=pruner /app/out/pnpm-lock.yaml ./pnpm-lock.yaml
+COPY --from=pruner /app/out/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=pruner /app/out/json/ .
+
+ENV PUPPETEER_SKIP_DOWNLOAD true
+ENV PUPPETEER_DOWNLOAD_HOST https://cdn.npmmirror.com/binaries
+
+# ***** 改为你公司的内网 npm 源 *****
+ARG NPM_REGISTRY=http://artifact.nc.rdcloud.4c.hq.cmcc/artifactory/api/npm/npm-taobao/
+RUN pnpm install --registry ${NPM_REGISTRY} --frozen-lockfile
+
+ARG NEXT_PUBLIC_LANGFUSE_CLOUD_REGION
+ARG NEXT_PUBLIC_DEMO_ORG_ID
+ARG NEXT_PUBLIC_DEMO_PROJECT_ID
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_POSTHOG_HOST
+
+COPY --from=pruner /app/out/full/ .
+
+RUN turbo run build --filter=worker...
+
+# ============================================================
+# runner
+# ============================================================
+FROM --platform=${TARGETPLATFORM:-linux/amd64} base AS runner
+
+ARG TARGETPLATFORM BUILDPLATFORM
+
+WORKDIR /app
+
+ARG NEXT_PUBLIC_BUILD_ID
+ENV BUILD_ID=$NEXT_PUBLIC_BUILD_ID
+
+ENV NODE_ENV production
+ENV DOCKER_BUILD 0
+
+ARG UID=1001 GID=1001
+RUN addgroup --system --gid ${GID} expressjs
+RUN adduser --system --uid ${UID} expressjs
+USER expressjs
+COPY --from=builder --chown=expressjs:expressjs /app .
+COPY --chown=expressjs:expressjs ./worker/entrypoint.sh ./worker/entrypoint.sh
+RUN chmod +x ./worker/entrypoint.sh
+
+EXPOSE 3030
+ENV PORT=3030
+
+ENTRYPOINT ["dumb-init", "--", "./worker/entrypoint.sh"]
+CMD ["node", "worker/dist/index.js"]
