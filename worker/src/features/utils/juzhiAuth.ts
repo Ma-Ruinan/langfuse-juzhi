@@ -9,22 +9,18 @@ import { URL } from "url";
 const JUZHI_BASEURL_KEYWORD = "juzhi";
 
 // TODO(juzhi): 后续根据聚智实际参数调整
-const JUZHI_DEFAULT_MODEL_ID =
-  "2c04713c-a4eb-43a1-b977-4afcd856b558";
+const JUZHI_DEFAULT_MODEL_ID = "2c04713c-a4eb-43a1-b977-4afcd856b558";
 
 const JUZHI_DEFAULT_MODEL_SOURCE = "public";
 
 // traceId 获取失败时使用；不参与 HMAC 签名
-export const JUZHI_DEFAULT_TRACE_ID =
-  "1qaz2wsx3edc4rfv5tgb6yhn12345672";
+export const JUZHI_DEFAULT_TRACE_ID = "1qaz2wsx3edc4rfv5tgb6yhn12345672";
 
 /**
  * 判断当前连接是否为聚智网关。
  * 非聚智连接完全不介入。
  */
-export function isJuzhiBaseURL(
-  baseURL: string | null | undefined,
-): boolean {
+export function isJuzhiBaseURL(baseURL: string | null | undefined): boolean {
   if (!baseURL) return false;
   return baseURL.includes(JUZHI_BASEURL_KEYWORD);
 }
@@ -103,9 +99,7 @@ export function generateJuzhiAuthHeader(params: {
   const requestLine = `${httpMethod} ${path} HTTP/1.1`;
 
   const signingStr =
-    `host: ${hostname}\n` +
-    `date: ${dateStr}\n` +
-    `${requestLine}`;
+    `host: ${hostname}\n` + `date: ${dateStr}\n` + `${requestLine}`;
 
   const signature = crypto
     .createHmac("sha256", apiSecret)

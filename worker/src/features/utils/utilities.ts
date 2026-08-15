@@ -135,14 +135,10 @@ export async function callStructuredLLM<T extends ZodV3Schema>(
       const sepIndex = decryptedSecret.indexOf(":");
 
       const juzhiApiKey =
-        sepIndex >= 0
-          ? decryptedSecret.slice(0, sepIndex)
-          : decryptedSecret;
+        sepIndex >= 0 ? decryptedSecret.slice(0, sepIndex) : decryptedSecret;
 
       const juzhiApiSecret =
-        sepIndex >= 0
-          ? decryptedSecret.slice(sepIndex + 1)
-          : "";
+        sepIndex >= 0 ? decryptedSecret.slice(sepIndex + 1) : "";
 
       // 3. 动态生成聚智 HMAC Authorization 内容。
       apiKeyToUse = generateJuzhiAuthHeader({
@@ -165,47 +161,39 @@ export async function callStructuredLLM<T extends ZodV3Schema>(
     // 现在：
     //   普通文本 -> JSON -> 手工解析 -> 原 schema 校验
 
-    const patchedMessages =
-      appendJsonOutputInstruction(messages);
+    const patchedMessages = appendJsonOutputInstruction(messages);
 
-    const { completion } =
-      await fetchLLMCompletion({
-        streaming: false,
+    const { completion } = await fetchLLMCompletion({
+      streaming: false,
 
-        apiKey: apiKeyToUse,
+      apiKey: apiKeyToUse,
 
-        extraHeaders:
-          decryptAndParseExtraHeaders(
-            llmApiKey.extraHeaders,
-          ),
+      extraHeaders: decryptAndParseExtraHeaders(llmApiKey.extraHeaders),
 
-        baseURL,
+      baseURL,
 
-        messages: patchedMessages,
+      messages: patchedMessages,
 
-        modelParams: {
-          provider,
-          model,
-          adapter: llmApiKey.adapter,
-          ...modelParams,
-        },
+      modelParams: {
+        provider,
+        model,
+        adapter: llmApiKey.adapter,
+        ...modelParams,
+      },
 
-        // 关键：
-        // 不向底层传 structuredOutputSchema，
-        // 从而绕过 function calling / 原生结构化输出。
-        structuredOutputSchema: undefined,
+      // 关键：
+      // 不向底层传 structuredOutputSchema，
+      // 从而绕过 function calling / 原生结构化输出。
+      structuredOutputSchema: undefined,
 
-        config: llmApiKey.config,
+      config: llmApiKey.config,
 
-        maxRetries: 1,
-      });
+      maxRetries: 1,
+    });
 
     // 将模型返回的普通文本手工解析，
     // 最后仍使用 Langfuse 原来的 schema 做校验。
-    return parseStructuredLLMText(
-      completion,
-      structuredOutputSchema,
-    );
+    return parseStructuredLLMText(completion, structuredOutputSchema);
   }, "call LLM");
 }
 
