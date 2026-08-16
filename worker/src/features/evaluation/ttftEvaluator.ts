@@ -1,7 +1,4 @@
-import {
-  getObservationsForTrace,
-  logger,
-} from "@langfuse/shared/src/server";
+import { getObservationsForTrace, logger } from "@langfuse/shared/src/server";
 
 /**
  * 聚智内置 TTFT 指标（Ours TTFT）—— 确定性计算，不经过 LLM。

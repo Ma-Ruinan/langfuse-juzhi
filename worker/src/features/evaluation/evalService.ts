@@ -599,7 +599,9 @@ export const evaluate = async ({
       } catch (e) {
         logger.error(`Failed to add TTFT score into IngestionQueue: ${e}`, e);
         traceException(e);
-        throw new Error(`Failed to write TTFT score ${scoreId} into IngestionQueue`);
+        throw new Error(
+          `Failed to write TTFT score ${scoreId} into IngestionQueue`,
+        );
       }
     }
 
