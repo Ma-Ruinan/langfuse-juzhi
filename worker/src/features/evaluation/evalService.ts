@@ -54,6 +54,8 @@ import {
 import { kyselyPrisma, prisma } from "@langfuse/shared/src/db";
 import { backOff } from "exponential-backoff";
 import { callStructuredLLM, compileHandlebarString } from "../utils";
+// JUZHI-ADAPTER HOOK: 内置 TTFT 指标
+import { isTtftEvaluator, evaluateTtftForTrace } from "./ttftEvaluator";
 import { env } from "../../env";
 import { JSONPath } from "jsonpath-plus";
 
@@ -530,6 +532,90 @@ export const evaluate = async ({
   logger.debug(
     `Evaluating job ${job.id} for project ${event.projectId} with template ${template.id}. Searching for context...`,
   );
+
+  // JUZHI-ADAPTER HOOK: TTFT 内置指标（确定性计算，不走 LLM）。
+  // 遍历本 trace 下所有 GENERATION，为每个 generation 写一个 CATEGORICAL 分数。
+  if (isTtftEvaluator(template.id)) {
+    const results = await evaluateTtftForTrace({
+      traceId: job.job_input_trace_id,
+      projectId: event.projectId,
+    });
+
+    let lastScoreId: string | null = null;
+    for (const r of results) {
+      const scoreId = randomUUID();
+      lastScoreId = scoreId;
+      const baseScore = {
+        id: scoreId,
+        traceId: job.job_input_trace_id,
+        observationId: r.observationId, // 挂到具体 generation 上
+        name: config.score_name,
+        value: r.value, // "good" / "medium" / "soso" / "bad" / "unknown"
+        comment: r.comment,
+        source: ScoreSource.EVAL,
+        environment: r.environment,
+      };
+
+      try {
+        const eventId = randomUUID();
+        const bucketPath = `${env.LANGFUSE_S3_EVENT_UPLOAD_PREFIX}${event.projectId}/score/${scoreId}/${eventId}.json`;
+        await getS3StorageServiceClient(
+          env.LANGFUSE_S3_EVENT_UPLOAD_BUCKET,
+        ).uploadJson(bucketPath, [
+          {
+            id: eventId,
+            timestamp: new Date().toISOString(),
+            type: eventTypes.SCORE_CREATE,
+            body: {
+              ...baseScore,
+              dataType: "CATEGORICAL",
+            },
+          },
+        ]);
+
+        if (redis) {
+          const shardingKey = `${event.projectId}-${scoreId}`;
+          const queue = IngestionQueue.getInstance({ shardingKey });
+          if (!queue) {
+            throw new Error("Ingestion queue not available");
+          }
+          await queue.add(QueueJobs.IngestionJob, {
+            id: randomUUID(),
+            timestamp: new Date(),
+            name: QueueJobs.IngestionJob as const,
+            payload: {
+              data: {
+                type: eventTypes.SCORE_CREATE,
+                eventBodyId: scoreId,
+                fileKey: eventId,
+              },
+              authCheck: {
+                validKey: true,
+                scope: { projectId: event.projectId },
+              },
+            },
+          });
+        }
+      } catch (e) {
+        logger.error(`Failed to add TTFT score into IngestionQueue: ${e}`, e);
+        traceException(e);
+        throw new Error(`Failed to write TTFT score ${scoreId} into IngestionQueue`);
+      }
+    }
+
+    await kyselyPrisma.$kysely
+      .updateTable("job_executions")
+      .set("status", sql`'COMPLETED'::"JobExecutionStatus"`)
+      .set("end_time", new Date())
+      .set("job_output_score_id", lastScoreId)
+      .where("id", "=", event.jobExecutionId)
+      .execute();
+
+    logger.debug(
+      `Eval job ${job.id} (TTFT) for project ${event.projectId} completed, ${results.length} generation(s) scored.`,
+    );
+    return;
+  }
 
   // selectedcolumnid is not safe to use, needs validation in extractVariablesFromTrace()
   const parsedVariableMapping = variableMappingList.parse(
